@@ -2,39 +2,29 @@ package main
 
 import (
 	"fmt"
-	"time"
+	//"time"
+	"sort"
 	"strconv"
-	//"sort"
-	//"strings"
-	//"sync"
+	"strings"
+	"sync"
+	"runtime"
 )
 
 var ExecutePipeline = func(jobs ...job) {
-	//wg := &sync.WaitGroup{}
-	var in = make(chan interface{}, 10)
-	var out = make(chan interface{}, 10)	
+	runtime.GOMAXPROCS(8)
+	wg := &sync.WaitGroup{}
+	var in = make(chan interface{}, 100)
 	for _, task := range jobs {
-		//wg.Add(1)
-		go func(task job, in, out chan interface{}) {
-			//defer wg.Done()
+		var out = make(chan interface{}, 100)
+		wg.Add(1)
+		go func(wg *sync.WaitGroup, in, out chan interface{}, task job) {
+			defer wg.Done()
+			defer close(out)
 			task(in, out)
-			for message := range out {
-				in <- message
-			}
-		}(task, in, out)
-		// task(in, out)
-		// for message := range out {
-		// 	in <- message
-		// }
-		time.Sleep(time.Millisecond)
+		}(wg, in, out, task)
+		in = out
 	}
-	//fmt.Scanln()
-	//wg.Wait()
-	time.Sleep(time.Millisecond * 5000)
-	close(out)
-	close(in)
-	
-	fmt.Println("ExecutePipeline finished")
+	wg.Wait()
 }
 
 // var ExecutePipelineSync = func(inputData ...int) {
@@ -61,8 +51,34 @@ var ExecutePipeline = func(jobs ...job) {
 // 	fmt.Println("SingleHash crc32(md5(data)) " + md5Crc32Val)
 // 	crc32Val := DataSignerCrc32(strVal)
 // 	fmt.Println("SingleHash crc32(data) " + crc32Val)
-// 	return crc32Val + "~" + md5Crc32Val 
+// 	return crc32Val + "~" + md5Crc32Val
 // }
+
+var SingleHash = func(in, out chan interface{}) {
+	mutex := &sync.Mutex{}
+	wg := &sync.WaitGroup{}
+
+	for data := range in {
+		wg.Add(1)
+		go func(in interface{}, out chan interface{}, wg *sync.WaitGroup, mutex *sync.Mutex) {
+			defer wg.Done()
+			data := strconv.Itoa(in.(int))
+			crc32Chan := make(chan string)
+			go func(data string, out chan string) {
+				out <- DataSignerCrc32(data)
+				runtime.Gosched()
+			}(data, crc32Chan)
+			crc32Val := <-crc32Chan
+			mutex.Lock()
+			md5Val := DataSignerMd5(data)
+			mutex.Unlock()
+			md5Crc32Val := DataSignerCrc32(md5Val)
+			result := crc32Val + "~" + md5Crc32Val
+			out <- result
+		}(data, out, wg, mutex)
+	}
+	wg.Wait()
+}
 
 // var MultiHash = func(data string) string {
 // 	multiHash := ""
@@ -76,6 +92,36 @@ var ExecutePipeline = func(jobs ...job) {
 // 	return multiHash
 // }
 
+func MultiHash(in, out chan interface{}) {
+	wg := &sync.WaitGroup{}
+	for data := range in {
+		wg.Add(1)
+		go func(data string, out chan interface{}, wg *sync.WaitGroup) {
+			defer wg.Done()
+			results := make([]string, 6)
+			mutex := &sync.Mutex{}
+			wgItem := &sync.WaitGroup{}
+			for i := 0; i <= 5; i++ {
+				wgItem.Add(1)
+				dataStrVal := strconv.Itoa(i)
+				data := dataStrVal + data
+				go func(results []string, index int, data string, wgItem *sync.WaitGroup, mutex *sync.Mutex) {
+					defer wgItem.Done()
+					data = DataSignerCrc32(data)
+					runtime.Gosched()
+					mutex.Lock()
+					results[index] = data
+					mutex.Unlock()
+				}(results, i, data, wgItem, mutex)
+			}
+			wgItem.Wait()
+			totalResult := strings.Join(results, "")
+			out <- totalResult
+		}(data.(string), out, wg)
+	}
+	wg.Wait()
+}
+
 // var CombineResults = func(results []string) string {
 // 	fmt.Printf("CombineResults input %v\n", results)
 // 	sort.Slice(results, func(i, j int) bool {
@@ -84,45 +130,20 @@ var ExecutePipeline = func(jobs ...job) {
 // 	return strings.Join(results, "_")
 // }
 
-var SingleHash = func(in, out chan interface{}) {
-	//for val := range in {
-		val := <-in
-		inputVal := val.(int)
-		fmt.Printf("SingleHash input %d\n", inputVal)
-		strVal := strconv.Itoa(inputVal)
-	 	md5Val := DataSignerMd5(strVal)
-		fmt.Println("SingleHash md5 " + md5Val)
-		out <- md5Val
-		//time.Sleep(time.Millisecond * 100)
-	//} 
-	//close(out)
-	//fmt.Println("SingleHash called")
-	//time.Sleep(time.Millisecond * 100)
-}
-
-var MultiHash = func(in, out chan interface{}) {
-	fmt.Println("MultiHash called")
-	//for val := range in {
-		val := <-in
-		inputVal := val.(string)
-		fmt.Printf("MultiHash input %s\n", inputVal)
-		//strVal := strconv.Itoa(inputVal)
-		//md5Val := DataSignerMd5(strVal)
-		result := inputVal + " Finished"
-		fmt.Println("MultiHash result " + result)
-		out <- result
-		//time.Sleep(time.Millisecond * 100)
-	//}
-}
-
-var CombineResults = func(in, out chan interface{}) {
-	fmt.Println("CombineResults called")
+func CombineResults(in, out chan interface{}) {
+	var result []string
+	for data := range in {
+		result = append(result, data.(string))
+	}
+	sort.Strings(result)
+	totalResult := strings.Join(result, "_")
+	out <- totalResult
 }
 
 func main() {
 	testResult := "NOT_SET"
 
-	inputData := []int{0}
+	inputData := []int{0, 1}
 
 	hashSignJobs := []job{
 		job(func(in, out chan interface{}) {
@@ -132,7 +153,7 @@ func main() {
 		}),
 		job(SingleHash),
 		job(MultiHash),
-		//job(CombineResults),
+		job(CombineResults),
 		job(func(in, out chan interface{}) {
 			dataRaw := <-in
 			data, ok := dataRaw.(string)
