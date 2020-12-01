@@ -3,19 +3,21 @@ package main
 import (
 	"fmt"
 	//"time"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
-	"runtime"
+
+	//"github.com/pkg/profile"
 )
 
 var ExecutePipeline = func(jobs ...job) {
-	runtime.GOMAXPROCS(8)
+	//runtime.GOMAXPROCS(8)
 	wg := &sync.WaitGroup{}
-	var in = make(chan interface{}, 100)
+	var in = make(chan interface{})
 	for _, task := range jobs {
-		var out = make(chan interface{}, 100)
+		var out = make(chan interface{})
 		wg.Add(1)
 		go func(wg *sync.WaitGroup, in, out chan interface{}, task job) {
 			defer wg.Done()
@@ -60,21 +62,28 @@ var SingleHash = func(in, out chan interface{}) {
 
 	for data := range in {
 		wg.Add(1)
-		go func(in interface{}, out chan interface{}, wg *sync.WaitGroup, mutex *sync.Mutex) {
+		go func(input interface{}, out chan interface{}, wg *sync.WaitGroup, mutex *sync.Mutex) {
 			defer wg.Done()
-			data := strconv.Itoa(in.(int))
 			crc32Chan := make(chan string)
-			go func(data string, out chan string) {
-				out <- DataSignerCrc32(data)
+			go func(input interface{}, out chan string) {
+				out <- DataSignerCrc32(strconv.Itoa(input.(int)))
 				runtime.Gosched()
-			}(data, crc32Chan)
+			}(input, crc32Chan)
 			crc32Val := <-crc32Chan
-			mutex.Lock()
-			md5Val := DataSignerMd5(data)
-			mutex.Unlock()
-			md5Crc32Val := DataSignerCrc32(md5Val)
+
+			md5Crc32Chan := make(chan string)
+			go func(mutex *sync.Mutex, input interface{}, out chan string) {
+				mutex.Lock()
+				md5Val := DataSignerMd5(strconv.Itoa(input.(int)))
+				mutex.Unlock()
+				runtime.Gosched()
+				out <- DataSignerCrc32(md5Val)
+			}(mutex, input, md5Crc32Chan)
+
+			md5Crc32Val := <-md5Crc32Chan
 			result := crc32Val + "~" + md5Crc32Val
 			out <- result
+			runtime.Gosched()
 		}(data, out, wg, mutex)
 	}
 	wg.Wait()
@@ -99,20 +108,18 @@ func MultiHash(in, out chan interface{}) {
 		go func(data string, out chan interface{}, wg *sync.WaitGroup) {
 			defer wg.Done()
 			results := make([]string, 6)
-			mutex := &sync.Mutex{}
+			//mutex := &sync.Mutex{}
 			wgItem := &sync.WaitGroup{}
-			for i := 0; i <= 5; i++ {
+			for index := 0; index <= 5; index++ {
 				wgItem.Add(1)
-				dataStrVal := strconv.Itoa(i)
-				data := dataStrVal + data
-				go func(results []string, index int, data string, wgItem *sync.WaitGroup, mutex *sync.Mutex) {
+				go func(results []string, index int, data string, wgItem *sync.WaitGroup) {
 					defer wgItem.Done()
-					data = DataSignerCrc32(data)
+					data = DataSignerCrc32(strconv.Itoa(index) + data)
 					runtime.Gosched()
-					mutex.Lock()
+					//mutex.Lock()
 					results[index] = data
-					mutex.Unlock()
-				}(results, i, data, wgItem, mutex)
+					//mutex.Unlock()
+				}(results, index, data, wgItem)
 			}
 			wgItem.Wait()
 			totalResult := strings.Join(results, "")
@@ -135,12 +142,15 @@ func CombineResults(in, out chan interface{}) {
 	for data := range in {
 		result = append(result, data.(string))
 	}
-	sort.Strings(result)
+	sort.Slice(result, func(i, j int) bool {
+ 		return result[i] < result[j]
+ 	})
 	totalResult := strings.Join(result, "_")
 	out <- totalResult
 }
 
 func main() {
+	//defer profile.Start().Stop()
 	testResult := "NOT_SET"
 
 	inputData := []int{0, 1}
