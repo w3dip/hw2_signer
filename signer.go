@@ -8,7 +8,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-
 	//"github.com/pkg/profile"
 )
 
@@ -64,21 +63,22 @@ var SingleHash = func(in, out chan interface{}) {
 		wg.Add(1)
 		go func(input interface{}, out chan interface{}, wg *sync.WaitGroup, mutex *sync.Mutex) {
 			defer wg.Done()
-			crc32Chan := make(chan string)
-			go func(input interface{}, out chan string) {
-				out <- DataSignerCrc32(strconv.Itoa(input.(int)))
-				runtime.Gosched()
-			}(input, crc32Chan)
-			crc32Val := <-crc32Chan
 
 			md5Crc32Chan := make(chan string)
 			go func(mutex *sync.Mutex, input interface{}, out chan string) {
 				mutex.Lock()
 				md5Val := DataSignerMd5(strconv.Itoa(input.(int)))
 				mutex.Unlock()
-				runtime.Gosched()
+				//runtime.Gosched()
 				out <- DataSignerCrc32(md5Val)
 			}(mutex, input, md5Crc32Chan)
+
+			crc32Chan := make(chan string)
+			go func(input interface{}, out chan string) {
+				out <- DataSignerCrc32(strconv.Itoa(input.(int)))
+				//runtime.Gosched()
+			}(input, crc32Chan)
+			crc32Val := <-crc32Chan
 
 			md5Crc32Val := <-md5Crc32Chan
 			result := crc32Val + "~" + md5Crc32Val
@@ -143,8 +143,8 @@ func CombineResults(in, out chan interface{}) {
 		result = append(result, data.(string))
 	}
 	sort.Slice(result, func(i, j int) bool {
- 		return result[i] < result[j]
- 	})
+		return result[i] < result[j]
+	})
 	totalResult := strings.Join(result, "_")
 	out <- totalResult
 }
